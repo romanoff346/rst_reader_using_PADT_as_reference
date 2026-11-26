@@ -212,8 +212,8 @@ static void diagnose_file(const std::string& rst_path) {
     std::fprintf(stderr, "\nFile number (word 0): %d (expected 100 for RST)\n", file_num);
     
     int32_t file_fmt = 0;
-    std::memcpy(&file_fmt, hdr + 4, 4);
-    std::fprintf(stderr, "File format (word 1): %d (expected 12 for RST)\n", file_fmt);
+    std::memcpy(&file_fmt, hdr + 8, 4);  // word[2] = byte 8
+    std::fprintf(stderr, "File format (word 2): %d (expected 12 for RST)\n", file_fmt);
     
     // Смотрим на данные после стандартного заголовка
     if (fsize > 408) {
@@ -227,13 +227,10 @@ static void diagnose_file(const std::string& rst_path) {
         std::fprintf(stderr, "  Pre-marker at byte 400: %d\n", pre);
         
         if (pre > 0 && pre < 1000000) {
-            int32_t post = 0;
-            long post_pos = 4 + pre * 4;
-            if (post_pos + 4 <= 64) {
-                std::memcpy(&post, buf + post_pos, 4);
-                std::fprintf(stderr, "  Post-marker at byte %ld: %d (match: %s)\n",
-                            post_pos, post, pre == post ? "YES" : "NO");
-            }
+            std::fprintf(stderr, "  -> FORTRAN запись: %d слов (%d байт)\n", pre, pre * 4);
+            std::fprintf(stderr, "  Следующая запись на byte: %ld\n", 400 + 4 + pre * 4);
+        } else if (pre == 0) {
+            std::fprintf(stderr, "  -> Нет FORTRAN записи (возможно padding или данные заголовка)\n");
         }
         
         // Проверяем запись на словесном смещении 103
@@ -251,16 +248,11 @@ static void diagnose_file(const std::string& rst_path) {
             
             if (pre103 > 0 && pre103 < 10000) {
                 std::fprintf(stderr, "  -> Похоже на валидный result header (%d слов)\n", pre103);
-                
-                // Проверяем post-marker
-                long post103_pos = 4 + pre103 * 4;
-                if (pos103 + post103_pos + 4 <= fsize) {
-                    std::fseek(f, pos103 + post103_pos, SEEK_SET);
-                    int32_t post103 = 0;
-                    std::fread(&post103, 4, 1, f);
-                    std::fprintf(stderr, "  Post-marker: %d (match: %s)\n", 
-                                post103, pre103 == post103 ? "YES" : "NO");
-                }
+                std::fprintf(stderr, "  Формат: [int32:N][N слов] БЕЗ post-marker\n");
+                std::fprintf(stderr, "  Размер записи: %d байт (4 + %d*4)\n", 
+                            4 + pre103 * 4, pre103);
+                std::fprintf(stderr, "  Следующая запись на byte: %ld (word %ld)\n",
+                            pos103 + 4 + pre103 * 4, (pos103 + 4 + pre103 * 4) / 4);
             }
         }
     }

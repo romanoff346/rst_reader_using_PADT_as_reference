@@ -151,10 +151,9 @@ bool RstReader::read_std_header(std::string& err) {
         return false;
     }
     
-    // Стандартный заголовок: значения хранятся на ЧЁТНЫХ словесных позициях
-    // (каждое значение — 4 байта, затем 4 байта пропуска):
-    //   word 0: file number, word 2: file format, word 4: time, ...
-    // Это соответствует формату pymapdl-reader (read_table с пропуском 4 байт)
+    // Стандартный заголовок ANSYS: значения на ЧЁТНЫХ словесных позициях
+    // (word 0, 2, 4, 6...), нечётные слова — другие данные (не padding!)
+    // Формат: [value:4][other:4][value:4][other:4]...
     
     // Слово 0: file number (должно быть 100 для RST)
     std_header_.file_number = rd_i32(buf.data() + 0 * 4);
@@ -259,8 +258,8 @@ bool RstReader::read_record_at(int64_t word_offset, std::vector<uint8_t>& data,
     int64_t data_bytes = static_cast<int64_t>(pre_marker) * kWord;
     
     // Проверяем, что запись помещается в файл
-    // Формат: [pre:4] [data:data_bytes] [post:4]
-    int64_t record_end = byte_offset + 4 + data_bytes + 4;
+    // Формат: [pre:4] [data:data_bytes] БЕЗ post-marker
+    int64_t record_end = byte_offset + 4 + data_bytes;
     if (record_end > file_bytes_) {
         err = "record extends beyond file end";
         return false;
@@ -277,19 +276,8 @@ bool RstReader::read_record_at(int64_t word_offset, std::vector<uint8_t>& data,
         }
     }
     
-    // Читаем post-маркер
-    int32_t post_marker = 0;
-    if (std::fread(&post_marker, 4, 1, fp_) != 1) {
-        err = "cannot read post-marker";
-        return false;
-    }
-    
-    if (post_marker != pre_marker) {
-        err = "record markers mismatch: pre=" + std::to_string(pre_marker) +
-              " post=" + std::to_string(post_marker) +
-              " at word " + std::to_string(word_offset);
-        return false;
-    }
+    // ANSYS RST формат: [int32:N][N слов] БЕЗ post-marker
+    // (в отличие от стандартного FORTRAN unformatted sequential)
     
     // Обработка сжатых данных (ANSCOMP)
     if (data_bytes >= 8 && is_comp_magic(data.data())) {
@@ -385,9 +373,9 @@ int64_t RstReader::record_total_words(int64_t word_offset) {
     if (std::fread(&pre, 4, 1, fp_) != 1) return -1;
     if (pre <= 0) return -1;
     
-    // Формат: [int32: pre] [pre слов данных] [int32: pre]
-    // Total: pre_marker(1) + data(pre) + post_marker(1) = pre + 2
-    return static_cast<int64_t>(pre) + 2;
+    // Формат: [int32: pre] [pre слов данных] БЕЗ post-marker
+    // Total: pre_marker(1) + data(pre) = pre + 1
+    return static_cast<int64_t>(pre) + 1;
 }
 
 // ============================================================================
