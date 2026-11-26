@@ -444,23 +444,103 @@ bool RstReader::read_result_header(std::string& err) {
     // ...
     // Ключевые указатели (из pymapdl-reader):
     
+    // Результатный заголовок — на словесном смещении 103
+    std::vector<int32_t> hdr;
+    RecordInfo info;
+    
+    if (!read_record_int32(kResultHeaderRecord, hdr, info, err)) {
+        return false;
+    }
+    
+    if (hdr.size() < 80) {
+        err = "result header too small: " + std::to_string(hdr.size()) + " words (need 80)";
+        return false;
+    }
+    
+    // Отладочный вывод всех 80 слов result header
+    std::fprintf(stderr, "\n=== Result Header (word 103, %zu слов) ===\n", hdr.size());
+    for (size_t i = 0; i < hdr.size(); ++i) {
+        std::fprintf(stderr, "  hdr[%2zu] = %d\n", i, hdr[i]);
+    }
+    
+    // Парсим заголовок результата согласно fdresu.inc / result_header_keys
+    // Индексы (0-based) из pymapdl-reader _rst_keys.py result_header_keys:
+    //
+    // Позиции указателей в заголовке результата (из документации ANSYS):
+    // [0]  = maxety   - max element type
+    // [1]  = maxrl    - max real constant
+    // [2]  = nnode    - number of nodes  
+    // [3]  = nelem    - number of elements
+    // [4]  = ptrLOC   - pointer to node locations (relative)
+    // [5]  = ptrETY   - pointer to element types
+    // [6]  = ptrSEC   - pointer to sections
+    // ...
+    // Ключевые указатели (из pymapdl-reader):
+    
     // Из pymapdl-reader _rst_keys.py, result_header_keys:
     // Позиции в заголовке результата (0-based word index):
     n_nodes_ = hdr[2];    // nnod
     n_elem_  = hdr[3];    // nelm
     
+    // nsets находится в hdr[6] согласно анализу реальных данных
+    nsets_ = hdr[6];
+    
+    if (nsets_ <= 0 || nsets_ > 10000000) {
+        err = "invalid number of result sets: " + std::to_string(nsets_);
+        return false;
+    }
+    
     // Указатели (относительные — нужно добавить базу)
     // В pymapdl-reader эти указатели используются как абсолютные word offsets
-    int64_t ptrNOD = hdr[16];  // ptrNOD - nodal equivalence table
-    int64_t ptrELM = hdr[17];  // ptrELM - element equivalence table  
-    int64_t ptrGEO = hdr[18];  // ptrGEO - geometry header
-    int64_t ptrDSI = hdr[20];  // ptrDSI - data set index
-    int64_t ptrTIM = hdr[21];  // ptrTIM - time values
-    int64_t ptrLSP = hdr[22];  // ptrLSP - load step table
-    int64_t ptrCOMP = hdr[25]; // ptrCOMP - components
+    // Указатели - пробуем разные позиции на основе реальных данных
+    // Из анализа: hdr[10]=696335, hdr[11]=10317, hdr[12]=30320, hdr[13]=50323
+    // hdr[14]=8400, hdr[15]=192, hdr[16]=80326
     
-    // Число наборов результатов
-    nsets_ = hdr[19]; // nsets
+    int64_t ptrNOD = hdr[16];  // 80326 - nodal equivalence table
+    int64_t ptrELM = hdr[14];  // 8400 - element equivalence table  
+    int64_t ptrGEO = hdr[15];  // 192 - geometry header
+    int64_t ptrDSI = hdr[11];  // 10317 - data set index
+    int64_t ptrTIM = hdr[12];  // 30320 - time values
+    int64_t ptrLSP = hdr[13];  // 50323 - load step table
+    int64_t ptrCOMP = hdr[10]; // 696335 - components
+    
+    std::fprintf(stderr, "  [DEBUG] nsets=%d\n", nsets_);
+    std::fprintf(stderr, "  [DEBUG] ptrNOD=%lld, ptrELM=%lld, ptrGEO=%lld\n", 
+                (long long)ptrNOD, (long long)ptrELM, (long long)ptrGEO);
+    std::fprintf(stderr, "  [DEBUG] ptrDSI=%lld, ptrTIM=%lld, ptrLSP=%lld, ptrCOMP=%lld\n",
+                (long long)ptrDSI, (long long)ptrTIM, (long long)ptrLSP, (long long)ptrCOMP);
+    
+    // Валидация указателей
+    auto valid_ptr = [&](int64_t p) -> bool {
+        return p > 0 && p * kWord < file_bytes_;
+    };
+    
+    std::fprintf(stderr, "  [DEBUG] File size: %lld bytes = %lld words\n", 
+                (long long)file_bytes_, (long long)(file_bytes_ / kWord));
+    std::fprintf(stderr, "  [DEBUG] ptrNOD valid: %s\n", valid_ptr(ptrNOD) ? "YES" : "NO");
+    std::fprintf(stderr, "  [DEBUG] ptrELM valid: %s\n", valid_ptr(ptrELM) ? "YES" : "NO");
+    std::fprintf(stderr, "  [DEBUG] ptrGEO valid: %s\n", valid_ptr(ptrGEO) ? "YES" : "NO");
+    std::fprintf(stderr, "  [DEBUG] ptrDSI valid: %s\n", valid_ptr(ptrDSI) ? "YES" : "NO");
+    std::fprintf(stderr, "  [DEBUG] ptrTIM valid: %s\n", valid_ptr(ptrTIM) ? "YES" : "NO");
+    std::fprintf(stderr, "  [DEBUG] ptrLSP valid: %s\n", valid_ptr(ptrLSP) ? "YES" : "NO");
+    std::fprintf(stderr, "  [DEBUG] ptrCOMP valid: %s\n", valid_ptr(ptrCOMP) ? "YES" : "NO");
+    
+    // Пробуем прочитать данные по указателям для проверки
+    if (valid_ptr(ptrGEO)) {
+        std::vector<int32_t> test_data;
+        RecordInfo test_info;
+        std::string test_err;
+        if (read_record_int32(ptrGEO, test_data, test_info, test_err)) {
+            std::fprintf(stderr, "  [DEBUG] GEO record at word %lld: %zu words, first values:", 
+                        (long long)ptrGEO, test_data.size());
+            for (size_t i = 0; i < std::min(test_data.size(), (size_t)10); ++i) {
+                std::fprintf(stderr, " %d", test_data[i]);
+            }
+            std::fprintf(stderr, "\n");
+        } else {
+            std::fprintf(stderr, "  [DEBUG] GEO read failed: %s\n", test_err.c_str());
+        }
+    }
     
     if (nsets_ <= 0 || nsets_ > 10000000) {
         err = "invalid number of result sets: " + std::to_string(nsets_);
