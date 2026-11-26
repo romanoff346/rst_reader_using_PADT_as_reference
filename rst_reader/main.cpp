@@ -253,6 +253,29 @@ static void diagnose_file(const std::string& rst_path) {
                             4 + pre103 * 4, pre103);
                 std::fprintf(stderr, "  Следующая запись на byte: %ld (word %ld)\n",
                             pos103 + 4 + pre103 * 4, (pos103 + 4 + pre103 * 4) / 4);
+                
+                // Читаем и выводим содержимое result header
+                std::fprintf(stderr, "\n=== Содержимое Result Header ===\n");
+                std::vector<int32_t> rh_data(pre103);
+                std::fseek(f, pos103 + 4, SEEK_SET);  // пропускаем pre-marker
+                std::fread(rh_data.data(), 4, pre103, f);
+                
+                for (int i = 0; i < pre103; ++i) {
+                    std::fprintf(stderr, "  hdr[%2d] = %d\n", i, rh_data[i]);
+                }
+                
+                // Пытаемся интерпретировать некоторые поля
+                std::fprintf(stderr, "\n=== Интерпретация Result Header ===\n");
+                std::fprintf(stderr, "  hdr[2] (nnod) = %d\n", rh_data[2]);
+                std::fprintf(stderr, "  hdr[3] (nelm) = %d\n", rh_data[3]);
+                std::fprintf(stderr, "  hdr[16] (ptrNOD) = %d\n", rh_data[16]);
+                std::fprintf(stderr, "  hdr[17] (ptrELM) = %d\n", rh_data[17]);
+                std::fprintf(stderr, "  hdr[18] (ptrGEO) = %d\n", rh_data[18]);
+                std::fprintf(stderr, "  hdr[19] (nsets) = %d\n", rh_data[19]);
+                std::fprintf(stderr, "  hdr[20] (ptrDSI) = %d\n", rh_data[20]);
+                std::fprintf(stderr, "  hdr[21] (ptrTIM) = %d\n", rh_data[21]);
+                std::fprintf(stderr, "  hdr[22] (ptrLSP) = %d\n", rh_data[22]);
+                std::fprintf(stderr, "  hdr[25] (ptrCOMP) = %d\n", rh_data[25]);
             }
         }
     }

@@ -412,7 +412,6 @@ bool RstReader::open(const std::string& p, std::string& err) {
 
 bool RstReader::read_result_header(std::string& err) {
     // Результатный заголовок — на словесном смещении 103
-    // (после стандартного заголовка 100 слов + первая запись)
     std::vector<int32_t> hdr;
     RecordInfo info;
     
@@ -423,6 +422,12 @@ bool RstReader::read_result_header(std::string& err) {
     if (hdr.size() < 80) {
         err = "result header too small: " + std::to_string(hdr.size()) + " words (need 80)";
         return false;
+    }
+    
+    // Отладочный вывод всех 80 слов result header
+    std::fprintf(stderr, "\n=== Result Header (word 103, %zu слов) ===\n", hdr.size());
+    for (size_t i = 0; i < hdr.size(); ++i) {
+        std::fprintf(stderr, "  hdr[%2zu] = %d\n", i, hdr[i]);
     }
     
     // Парсим заголовок результата согласно fdresu.inc / result_header_keys
