@@ -430,158 +430,118 @@ bool RstReader::read_result_header(std::string& err) {
         std::fprintf(stderr, "  hdr[%2zu] = %d\n", i, hdr[i]);
     }
     
-    // Парсим заголовок результата согласно fdresu.inc / result_header_keys
-    // Индексы (0-based) из pymapdl-reader _rst_keys.py result_header_keys:
-    //
-    // Позиции указателей в заголовке результата (из документации ANSYS):
-    // [0]  = maxety   - max element type
-    // [1]  = maxrl    - max real constant
-    // [2]  = nnode    - number of nodes  
-    // [3]  = nelem    - number of elements
-    // [4]  = ptrLOC   - pointer to node locations (relative)
-    // [5]  = ptrETY   - pointer to element types
-    // [6]  = ptrSEC   - pointer to sections
-    // ...
-    // Ключевые указатели (из pymapdl-reader):
+    // Реальная структура result header (по анализу файла):
+    // hdr[0]  = 0x80000000 (флаг/маркер)
+    // hdr[1]  = 12 (file format)
+    // hdr[2]  = 8205 = nnod (число узлов)
+    // hdr[3]  = 8205 = max node number
+    // hdr[4]  = 10000 = resmax
+    // hdr[5]  = 3 = numdof
+    // hdr[6]  = 1914 = nelm (число элементов)
+    // hdr[7]  = 1914 = max element number
+    // hdr[8]  = 0
+    // hdr[9]  = 1 = nsets (число наборов результатов)
+    // hdr[10] = 696335 = указатель
+    // hdr[11] = 10317 = указатель
+    // hdr[12] = 30320 = указатель
+    // hdr[13] = 50323 = указатель
+    // hdr[14] = 8400 = указатель
+    // hdr[15] = 192 = указатель
+    // hdr[16] = 80326 = указатель
     
-    // Результатный заголовок — на словесном смещении 103
-    std::vector<int32_t> hdr;
-    RecordInfo info;
+    n_nodes_ = hdr[2];    // nnod = 8205
+    n_elem_  = hdr[6];    // nelm = 1914
+    nsets_   = hdr[9];    // nsets = 1
     
-    if (!read_record_int32(kResultHeaderRecord, hdr, info, err)) {
-        return false;
-    }
-    
-    if (hdr.size() < 80) {
-        err = "result header too small: " + std::to_string(hdr.size()) + " words (need 80)";
-        return false;
-    }
-    
-    // Отладочный вывод всех 80 слов result header
-    std::fprintf(stderr, "\n=== Result Header (word 103, %zu слов) ===\n", hdr.size());
-    for (size_t i = 0; i < hdr.size(); ++i) {
-        std::fprintf(stderr, "  hdr[%2zu] = %d\n", i, hdr[i]);
-    }
-    
-    // Парсим заголовок результата согласно fdresu.inc / result_header_keys
-    // Индексы (0-based) из pymapdl-reader _rst_keys.py result_header_keys:
-    //
-    // Позиции указателей в заголовке результата (из документации ANSYS):
-    // [0]  = maxety   - max element type
-    // [1]  = maxrl    - max real constant
-    // [2]  = nnode    - number of nodes  
-    // [3]  = nelem    - number of elements
-    // [4]  = ptrLOC   - pointer to node locations (relative)
-    // [5]  = ptrETY   - pointer to element types
-    // [6]  = ptrSEC   - pointer to sections
-    // ...
-    // Ключевые указатели (из pymapdl-reader):
-    
-    // Из pymapdl-reader _rst_keys.py, result_header_keys:
-    // Позиции в заголовке результата (0-based word index):
-    n_nodes_ = hdr[2];    // nnod
-    n_elem_  = hdr[3];    // nelm
-    
-    // nsets находится в hdr[6] согласно анализу реальных данных
-    nsets_ = hdr[6];
+    std::fprintf(stderr, "  [DEBUG] nnod=%lld, nelm=%lld, nsets=%d\n",
+                (long long)n_nodes_, (long long)n_elem_, nsets_);
     
     if (nsets_ <= 0 || nsets_ > 10000000) {
         err = "invalid number of result sets: " + std::to_string(nsets_);
         return false;
     }
     
-    // Указатели (относительные — нужно добавить базу)
-    // В pymapdl-reader эти указатели используются как абсолютные word offsets
-    // Указатели - пробуем разные позиции на основе реальных данных
-    // Из анализа: hdr[10]=696335, hdr[11]=10317, hdr[12]=30320, hdr[13]=50323
-    // hdr[14]=8400, hdr[15]=192, hdr[16]=80326
-    
-    int64_t ptrNOD = hdr[16];  // 80326 - nodal equivalence table
-    int64_t ptrELM = hdr[14];  // 8400 - element equivalence table  
-    int64_t ptrGEO = hdr[15];  // 192 - geometry header
-    int64_t ptrDSI = hdr[11];  // 10317 - data set index
-    int64_t ptrTIM = hdr[12];  // 30320 - time values
-    int64_t ptrLSP = hdr[13];  // 50323 - load step table
-    int64_t ptrCOMP = hdr[10]; // 696335 - components
-    
-    std::fprintf(stderr, "  [DEBUG] nsets=%d\n", nsets_);
-    std::fprintf(stderr, "  [DEBUG] ptrNOD=%lld, ptrELM=%lld, ptrGEO=%lld\n", 
-                (long long)ptrNOD, (long long)ptrELM, (long long)ptrGEO);
-    std::fprintf(stderr, "  [DEBUG] ptrDSI=%lld, ptrTIM=%lld, ptrLSP=%lld, ptrCOMP=%lld\n",
-                (long long)ptrDSI, (long long)ptrTIM, (long long)ptrLSP, (long long)ptrCOMP);
-    
-    // Валидация указателей
+    // Пробуем прочитать ВСЕ указатели-кандидаты для определения их назначения
     auto valid_ptr = [&](int64_t p) -> bool {
         return p > 0 && p * kWord < file_bytes_;
     };
     
     std::fprintf(stderr, "  [DEBUG] File size: %lld bytes = %lld words\n", 
                 (long long)file_bytes_, (long long)(file_bytes_ / kWord));
-    std::fprintf(stderr, "  [DEBUG] ptrNOD valid: %s\n", valid_ptr(ptrNOD) ? "YES" : "NO");
-    std::fprintf(stderr, "  [DEBUG] ptrELM valid: %s\n", valid_ptr(ptrELM) ? "YES" : "NO");
-    std::fprintf(stderr, "  [DEBUG] ptrGEO valid: %s\n", valid_ptr(ptrGEO) ? "YES" : "NO");
-    std::fprintf(stderr, "  [DEBUG] ptrDSI valid: %s\n", valid_ptr(ptrDSI) ? "YES" : "NO");
-    std::fprintf(stderr, "  [DEBUG] ptrTIM valid: %s\n", valid_ptr(ptrTIM) ? "YES" : "NO");
-    std::fprintf(stderr, "  [DEBUG] ptrLSP valid: %s\n", valid_ptr(ptrLSP) ? "YES" : "NO");
-    std::fprintf(stderr, "  [DEBUG] ptrCOMP valid: %s\n", valid_ptr(ptrCOMP) ? "YES" : "NO");
     
-    // Пробуем прочитать данные по указателям для проверки
-    if (valid_ptr(ptrGEO)) {
+    // Читаем записи по всем ненулевым указателям из hdr[10..30]
+    for (int idx = 10; idx <= 30 && idx < static_cast<int>(hdr.size()); ++idx) {
+        int64_t ptr = hdr[idx];
+        if (!valid_ptr(ptr)) continue;
+        
         std::vector<int32_t> test_data;
         RecordInfo test_info;
         std::string test_err;
-        if (read_record_int32(ptrGEO, test_data, test_info, test_err)) {
-            std::fprintf(stderr, "  [DEBUG] GEO record at word %lld: %zu words, first values:", 
-                        (long long)ptrGEO, test_data.size());
-            for (size_t i = 0; i < std::min(test_data.size(), (size_t)10); ++i) {
+        if (read_record_int32(ptr, test_data, test_info, test_err)) {
+            std::fprintf(stderr, "  [DEBUG] hdr[%d]=%lld -> record: %zu words, first:", 
+                        idx, (long long)ptr, test_data.size());
+            for (size_t i = 0; i < std::min(test_data.size(), (size_t)8); ++i) {
                 std::fprintf(stderr, " %d", test_data[i]);
             }
             std::fprintf(stderr, "\n");
         } else {
-            std::fprintf(stderr, "  [DEBUG] GEO read failed: %s\n", test_err.c_str());
+            std::fprintf(stderr, "  [DEBUG] hdr[%d]=%lld -> READ FAILED: %s\n", 
+                        idx, (long long)ptr, test_err.c_str());
         }
     }
     
-    if (nsets_ <= 0 || nsets_ > 10000000) {
-        err = "invalid number of result sets: " + std::to_string(nsets_);
-        return false;
+    // Также пробуем прочитать как double
+    for (int idx = 10; idx <= 30 && idx < static_cast<int>(hdr.size()); ++idx) {
+        int64_t ptr = hdr[idx];
+        if (!valid_ptr(ptr)) continue;
+        
+        std::vector<double> test_data;
+        RecordInfo test_info;
+        std::string test_err;
+        if (read_record_f64(ptr, test_data, test_info, test_err)) {
+            std::fprintf(stderr, "  [DEBUG] hdr[%d]=%lld -> DOUBLE record: %zu values, first:", 
+                        idx, (long long)ptr, test_data.size());
+            for (size_t i = 0; i < std::min(test_data.size(), (size_t)6); ++i) {
+                std::fprintf(stderr, " %.4g", test_data[i]);
+            }
+            std::fprintf(stderr, "\n");
+        }
     }
     
-    ptr_geo_ = ptrGEO;
-    ptr_comp_ = ptrCOMP;
-    ptr_nod_ = ptrNOD;
-    ptr_elm_ = ptrELM;
-    ptr_dsi_ = ptrDSI;
-    ptr_tim_ = ptrTIM;
-    ptr_lsp_ = ptrLSP;
+    // ВРЕМЕННАЯ заглушка: сохраняем все указатели-кандидаты
+    // Нужно будет определить правильные позиции после диагностики
+    // Пока просто сохраняем для дальнейшего использования
+    
+    // Сохраняем указатели для использования в других методах
+    // (будет уточнено после анализа диагностического вывода)
+    ptr_geo_ = hdr[15];   // 192
+    ptr_nod_ = hdr[16];   // 80326
+    ptr_elm_ = hdr[14];   // 8400
+    ptr_dsi_ = hdr[11];   // 10317
+    ptr_tim_ = hdr[12];   // 30320
+    ptr_lsp_ = hdr[13];   // 50323
+    ptr_comp_ = hdr[10];  // 696335
     
     // Читаем таблицу указателей на наборы результатов (DSI)
-    // DSI содержит 2*resmax int32: первые resmax = нижние 32 бита,
-    // вторые resmax = верхние 32 бита указателей
-    if (ptrDSI > 0) {
+    if (ptr_dsi_ > 0) {
         std::vector<int32_t> dsi;
         RecordInfo dsi_info;
-        if (read_record_int32(ptrDSI, dsi, dsi_info, err)) {
-            int32_t resmax = dsi_info.num_words / 2;
-            if (resmax > 0 && static_cast<int32_t>(dsi.size()) >= 2 * nsets_) {
-                sets_.resize(nsets_);
-                for (int i = 0; i < nsets_; ++i) {
-                    // Комбинируем два int32 в int64 (little-endian)
-                    int32_t lo = dsi[i];
-                    int32_t hi = dsi[resmax + i];
-                    sets_[i].rpointer_words = static_cast<int64_t>(lo) | 
-                                              (static_cast<int64_t>(hi) << 32);
-                }
+        if (read_record_int32(ptr_dsi_, dsi, dsi_info, err)) {
+            sets_.resize(nsets_);
+            // Попробуем несколько форматов DSI
+            // Формат 1: просто массив int32 указателей
+            for (int i = 0; i < nsets_ && i < static_cast<int>(dsi.size()); ++i) {
+                sets_[i].rpointer_words = dsi[i];
             }
         }
         err.clear();
     }
     
     // Читаем временные значения
-    if (ptrTIM > 0 && nsets_ > 0) {
+    if (ptr_tim_ > 0 && nsets_ > 0) {
         std::vector<double> times;
         RecordInfo tim_info;
-        if (read_record_f64(ptrTIM, times, tim_info, err)) {
+        if (read_record_f64(ptr_tim_, times, tim_info, err)) {
             for (int i = 0; i < nsets_ && i < static_cast<int>(times.size()); ++i) {
                 sets_[i].time = times[i];
             }
@@ -590,16 +550,15 @@ bool RstReader::read_result_header(std::string& err) {
     }
     
     // Читаем таблицу load step/substep
-    if (ptrLSP > 0 && nsets_ > 0) {
+    if (ptr_lsp_ > 0 && nsets_ > 0) {
         std::vector<int32_t> lsp;
         RecordInfo lsp_info;
-        if (read_record_int32(ptrLSP, lsp, lsp_info, err)) {
+        if (read_record_int32(ptr_lsp_, lsp, lsp_info, err)) {
             for (int i = 0; i < nsets_; ++i) {
                 int base = i * 3;
                 if (base + 2 < static_cast<int>(lsp.size())) {
                     sets_[i].step    = lsp[base + 0];
                     sets_[i].substep = lsp[base + 1];
-                    // lsp[base+2] = cumulative iteration
                 }
             }
         }
@@ -607,24 +566,24 @@ bool RstReader::read_result_header(std::string& err) {
     }
     
     // Читаем nodal equivalence table
-    if (ptrNOD > 0) {
+    if (ptr_nod_ > 0) {
         RecordInfo nod_info;
-        read_record_int32(ptrNOD, neqv_, nod_info, err);
+        read_record_int32(ptr_nod_, neqv_, nod_info, err);
         err.clear();
     }
     
     // Читаем element equivalence table
-    if (ptrELM > 0) {
+    if (ptr_elm_ > 0) {
         RecordInfo elm_info;
-        read_record_int32(ptrELM, eeqv_, elm_info, err);
+        read_record_int32(ptr_elm_, eeqv_, elm_info, err);
         err.clear();
     }
     
     // Читаем компоненты (Name Selections)
-    if (ptrCOMP > 0) {
+    if (ptr_comp_ > 0) {
         std::vector<int32_t> comp_data;
         RecordInfo comp_info;
-        if (read_record_int32(ptrCOMP, comp_data, comp_info, err)) {
+        if (read_record_int32(ptr_comp_, comp_data, comp_info, err)) {
             parse_components(comp_data);
         }
         err.clear();
